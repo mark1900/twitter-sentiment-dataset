@@ -17,28 +17,47 @@
 #
 # USAGE:
 # 1. Fill in the following parameters (from your twitter's app):
-#    CONSUMER_KEY, CONSUMER_SECRET, ACCESS_KEY, ACCESS_SECRET.
+#    CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET.
 # 2. Run the script (Optional: change paths).
 #
-# Twitter currently limits such requests to 180/window (15 minutes). To be on the
-# safe side, we use 150/window, which requires ~9 hours for the script to complete.
+# Twitter currently limits such requests to 900/window (15 minutes).
+# This will require around 1.5 hours for the script to complete.
+#
+##############################################################
+#
+# Updated to be Python 3 compatible and run against the current Twitter API.
+#
+# Tested Environment - Windows 10 Pro + Python 3.6.1 + tweepy 3.5.0
+#
+# - Mark
+#
+##############################################################
+#
+# New Dependency on tweepy - https://github.com/tweepy/tweepy
+# - Install tweepy using pip, as...
+#   - pip is the preferred installer program - https://docs.python.org/3/installing/
+#   - With Python 3.4, pip is included by default with the Python binary installers.
+# - Command
+#   - pip install tweepy
+#
 #
 import csv, getpass, json, os, time, urllib
-import oauth2 as oauth
+
+import tweepy
 
 CONSUMER_KEY = 'Your twitter app key'
 CONSUMER_SECRET = 'Your twitter app secret'
-ACCESS_KEY = 'Your access token key'
-ACCESS_SECRET = 'Your access token secret'
+ACCESS_TOKEN = 'Your access token key'
+ACCESS_TOKEN_SECRET = 'Your access token secret'
 
 def get_user_params():
 
     user_params = {}
 
     # get user input params
-    user_params['inList']  = raw_input( '\nInput file [./corpus.csv]: ' )
-    user_params['outList'] = raw_input( 'Results file [./full-corpus.csv]: ' )
-    user_params['rawDir']  = raw_input( 'Raw data dir [./rawdata/]: ' )
+    user_params['inList']  = input( '\nInput file [./corpus.csv]: ' )
+    user_params['outList'] = input( 'Results file [./full-corpus.csv]: ' )
+    user_params['rawDir']  = input( 'Raw data dir [./rawdata/]: ' )
     
     # apply defaults
     if user_params['inList']  == '': 
@@ -54,16 +73,16 @@ def get_user_params():
 def dump_user_params( user_params ):
 
     # dump user params for confirmation
-    print 'Input:    '   + user_params['inList']
-    print 'Output:   '   + user_params['outList']
-    print 'Raw data: '   + user_params['rawDir']
+    print('Input:    '   + user_params['inList'])
+    print('Output:   '   + user_params['outList'])
+    print('Raw data: '   + user_params['rawDir'])
     return
 
 
 def read_total_list( in_filename ):
 
     # read total fetch list csv
-    fp = open( in_filename, 'rb' )
+    fp = open( in_filename, 'r', encoding="utf-8" )
     reader = csv.reader( fp, delimiter=',', quotechar='"' )
 
     total_list = []
@@ -88,7 +107,7 @@ def purge_already_fetched( fetch_list, raw_dir ):
             # attempt to parse json file
             try:
                 parse_tweet_json( tweet_file )
-                print '--> already downloaded #' + item[2]
+                print('--> already downloaded #' + item[2])
             except RuntimeError:
                 rem_list.append( item )
         else:
@@ -108,20 +127,18 @@ def get_time_left_str( cur_idx, fetch_list, download_pause ):
 
     return '%dh %dm %ds' % (str_hr, str_min, str_sec)
 
-def oauth_get_tweet(tid, http_method="GET", post_body='',
-        http_headers=None):
-    url = 'http://api.twitter.com/1.1/statuses/show.json?id=' + tid
-    consumer = oauth.Consumer(key=CONSUMER_KEY, secret=CONSUMER_SECRET)
-    token = oauth.Token(key=ACCESS_KEY, secret=ACCESS_SECRET)
-    client = oauth.Client(consumer, token)
- 
-    resp, content = client.request(
-        url,
-        method=http_method,
-        body=post_body,
-        headers=http_headers
-    )
-    return content
+def oauth_get_tweet(tweet_id, http_method="GET", post_body='', http_headers=None):
+    
+    auth = tweepy.OAuthHandler(CONSUMER_KEY, CONSUMER_SECRET)
+    auth.set_access_token(ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
+    api = tweepy.API(auth)
+    
+    #print('Fetching tweet for ID %s', tweet_id)
+
+    tweet = api.get_status(tweet_id)
+    print("%s,%s" % (tweet_id, tweet.text))
+    return tweet
+
 
 def download_tweets( fetch_list, raw_dir ):
 
@@ -129,9 +146,12 @@ def download_tweets( fetch_list, raw_dir ):
     if not os.path.exists( raw_dir ):
         os.mkdir( raw_dir )
 
-    # stay within rate limits
-    max_tweets_per_hr  = 150*4
-    download_pause_sec = 3600 / max_tweets_per_hr
+    # Set rate limit and minus fudge factor of 100
+    # https://dev.twitter.com/rest/public/rate-limits
+    max_tweets_per_hr  = 4 * 900 - 100
+    download_pause_sec = 3600.0 / max_tweets_per_hr
+    print("Tweet Throttle - Max tweets per hour = %d (One every %f seconds)" % \
+            (max_tweets_per_hr, download_pause_sec))
 
     # download tweets
     for idx in range(0,len(fetch_list)):
@@ -141,17 +161,22 @@ def download_tweets( fetch_list, raw_dir ):
 
         # print status
         trem = get_time_left_str( idx, fetch_list, download_pause_sec )
-        print '--> downloading tweet #%s (%d of %d) (%s left)' % \
-              (item[2], idx+1, len(fetch_list), trem)
+        print('--> downloading tweet #%s (%d of %d) (%s left)' % \
+              (item[2], idx+1, len(fetch_list), trem))
 
         # pull data
-        data = oauth_get_tweet(item[2])
-        with open(raw_dir + item[2] + '.json', 'wb') as outfile:
-          json.dump(data, outfile)
+        try:
+            data = oauth_get_tweet(item[2])
+            with open(raw_dir + item[2] + '.json', 'w', encoding="utf-8") as outfile:
+                json.dump(data._json, outfile, ensure_ascii=False, indent=2)
+        except tweepy.TweepError as te:
+            print("Failed to get tweet ID %s: %s" % (item[2], te))
+            # traceback.print_exc(file=sys.stderr)
+            pass
           
         # stay in Twitter API rate limits 
-        print '    pausing %d sec to obey Twitter API rate limits' % \
-              (download_pause_sec)
+        print('    pausing %f seconds to obey Twitter API rate limits' % \
+              (download_pause_sec))
         time.sleep( download_pause_sec )
 
     return
@@ -160,15 +185,16 @@ def download_tweets( fetch_list, raw_dir ):
 def parse_tweet_json( filename ):
     
     # read tweet
-    print 'opening: ' + filename
-    fp = open( filename, 'rb' )
-
-    # parse json
-    try:
-        twj = json.load( fp )
-        tweet_json = json.JSONDecoder().decode(twj)
-    except ValueError:
-        raise RuntimeError('error parsing json')
+    print('opening: ' + filename)
+	
+    # parse json    
+    with open( filename, 'rt', encoding="utf-8" ) as infile:
+        try:
+            tweet_json = json.load( infile )
+        except ValueError as e:
+            raise RuntimeError("Error parsing json - %s" % str(e))
+        except json.JSONDecodeError as e:
+            raise RuntimeError("Error parsing json - %s" % str(e))
 
     # look for twitter api error msgs
     if 'errors' in tweet_json:
@@ -181,8 +207,8 @@ def parse_tweet_json( filename ):
 def build_output_corpus( out_filename, raw_dir, total_list ):
 
     # open csv output file
-    fp = open( out_filename, 'wb' )
-    writer = csv.writer( fp, delimiter=',', quotechar='"', escapechar='\\',
+    fp = open( out_filename, 'w', newline='', encoding="utf-8" )
+    writer = csv.writer( fp, delimiter=',', quotechar='"', escapechar='\\', 
                          quoting=csv.QUOTE_ALL )
 
     # write header row
@@ -199,29 +225,25 @@ def build_output_corpus( out_filename, raw_dir, total_list ):
                 # parse tweet
                 parsed_tweet = parse_tweet_json( raw_dir + item[2] + '.json' )
                 full_row = item + parsed_tweet
-    
-                # character encoding for output
-                for i in range(0,len(full_row)):
-                    full_row[i] = full_row[i].encode("utf-8")
-    
+        
                 # write csv row
                 writer.writerow( full_row )
 
             except RuntimeError:
-                print '--> bad data in tweet #' + item[2]
+                print('--> bad data in tweet #' + item[2])
                 missing_count += 1
 
         else:
-            print '--> missing tweet #' + item[2]
+            print('--> missing tweet #' + item[2])
             missing_count += 1
 
     # indicate success
     if missing_count == 0:
-        print '\nSuccessfully downloaded corpus!'
-        print 'Output in: ' + out_filename + '\n'
+        print('\nSuccessfully downloaded corpus!')
+        print('Output in: ' + out_filename + '\n')
     else: 
-        print '\nMissing %d of %d tweets!' % (missing_count, len(total_list))
-        print 'Partial output in: ' + out_filename + '\n'
+        print('\nMissing %d of %d tweets!' % (missing_count, len(total_list)))
+        print('Partial output in: ' + out_filename + '\n')
 
     return
 
@@ -240,7 +262,7 @@ def main():
     download_tweets( fetch_list, user_params['rawDir'] )
 
     # second pass for any failed downloads
-    print '\nStarting second pass to retry any failed downloads';
+    print('\nStarting second pass to retry any failed downloads')
     fetch_list = purge_already_fetched( total_list, user_params['rawDir'] )
     download_tweets( fetch_list, user_params['rawDir'] )
 
